@@ -1,7 +1,12 @@
+import os
+import json
 import requests
 from typing import Optional
-from fastapi import FastAPI, Depends, Query
+from fastapi import FastAPI, Depends, Query, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy.orm import Session
+from google_auth_oauthlib.flow import Flow
+
 from app.db.database import engine, Base, get_db
 from app.db.models import Tenant, FAQ
 from app.whatsapp.webhook import router as webhook_router
@@ -114,6 +119,119 @@ def subscribe_waba(
             "status": "error",
             "error_detail": str(e)
         }
+
+
+@app.get("/auth/google")
+def google_auth_login(
+    request: Request,
+    tenant_id: int = Query(1, description="ID del Tenant da collegare"),
+    db: Session = Depends(get_db)
+):
+    """
+    Avvia il flusso OAuth2 per collegare Google Calendar al Tenant specificato.
+    """
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        return {"status": "error", "message": f"Tenant ID={tenant_id} non trovato"}
+
+    redirect_uri = f"{request.url.scheme}://{request.url.netloc}/auth/google/callback"
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        return {
+            "status": "error",
+            "message": "Variabili GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET non trovate su Render.",
+            "instruct": "Imposta GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET nell'Environment di Render.",
+            "redirect_uri_da_autorizzare_su_google_cloud_console": redirect_uri
+        }
+
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=["https://www.googleapis.com/auth/calendar"],
+        redirect_uri=redirect_uri
+    )
+
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
+        state=str(tenant_id)
+    )
+
+    return RedirectResponse(authorization_url)
+
+
+@app.get("/auth/google/callback")
+def google_auth_callback(
+    request: Request,
+    code: str = Query(...),
+    state: str = Query("1"),
+    db: Session = Depends(get_db)
+):
+    """
+    Callback OAuth2 di Google: scambia il codice temporaneo con il refresh token e salva su DB.
+    """
+    tenant_id = int(state) if state.isdigit() else 1
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+
+    redirect_uri = f"{request.url.scheme}://{request.url.netloc}/auth/google/callback"
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+
+    client_config = {
+        "web": {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=["https://www.googleapis.com/auth/calendar"],
+        redirect_uri=redirect_uri
+    )
+
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+
+    creds_dict = {
+        "token": credentials.token,
+        "refresh_token": credentials.refresh_token,
+        "token_uri": credentials.token_uri,
+        "client_id": credentials.client_id,
+        "client_secret": credentials.client_secret,
+        "scopes": credentials.scopes
+    }
+
+    tenant.google_credentials_json = json.dumps(creds_dict)
+    if not tenant.google_calendar_id:
+        tenant.google_calendar_id = "primary"
+
+    db.commit()
+
+    return HTMLResponse(content=f"""
+    <html>
+        <body style="font-family: sans-serif; text-align: center; padding-top: 50px;">
+            <h1 style="color: #2e7d32;">Google Calendar Collegato con Successo!</h1>
+            <p>Il tenant <strong>{tenant.name}</strong> (ID: {tenant.id}) è ora autorizzato a leggere e scrivere appuntamenti su Google Calendar.</p>
+        </body>
+    </html>
+    """)
+
 
 
 
