@@ -1,4 +1,5 @@
 import requests
+from typing import Optional
 from fastapi import FastAPI, Depends, Query
 from sqlalchemy.orm import Session
 from app.db.database import engine, Base, get_db
@@ -29,7 +30,7 @@ def root():
 @app.get("/seed")
 def seed_tenant(
     phone_id: str = Query(..., description="WhatsApp Phone Number ID"),
-    token: str = Query(..., description="WhatsApp Access Token"),
+    token: Optional[str] = Query(None, description="WhatsApp Access Token"),
     tenant_name: str = Query("Studio Medico Rossi", description="Nome dello Studio"),
     db: Session = Depends(get_db),
 ):
@@ -46,7 +47,7 @@ def seed_tenant(
             title="Dott.",
             last_name="Rossi",
             whatsapp_phone_number_id=phone_id,
-            whatsapp_access_token=token,
+            whatsapp_access_token=token or "",
             work_start_time="09:00",
             work_end_time="17:00",
             working_days="mon,tue,wed,thu,fri",
@@ -56,7 +57,8 @@ def seed_tenant(
         db.add(tenant)
     else:
         tenant.whatsapp_phone_number_id = phone_id
-        tenant.whatsapp_access_token = token
+        if token:
+            tenant.whatsapp_access_token = token
         tenant.name = tenant_name
         tenant.is_active = True
 
@@ -85,11 +87,17 @@ def seed_tenant(
 @app.get("/subscribe-waba")
 def subscribe_waba(
     waba_id: str = Query(..., description="WhatsApp Business Account ID"),
-    token: str = Query(..., description="Meta System/User Access Token"),
+    token: Optional[str] = Query(None, description="Meta System/User Access Token"),
 ):
     """
     Iscrive l'account WABA ai webhook di Meta via Graph API.
     """
+    if not token:
+        return {
+            "status": "error",
+            "message": "Devi specificare sia waba_id che token nell'URL. Esempio: /subscribe-waba?waba_id=123456&token=EAAG..."
+        }
+
     url = f"https://graph.facebook.com/v18.0/{waba_id}/subscribed_apps"
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -106,5 +114,6 @@ def subscribe_waba(
             "status": "error",
             "error_detail": str(e)
         }
+
 
 
