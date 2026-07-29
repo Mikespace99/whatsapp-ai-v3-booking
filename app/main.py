@@ -1,3 +1,4 @@
+import requests
 from fastapi import FastAPI, Depends, Query
 from sqlalchemy.orm import Session
 from app.db.database import engine, Base, get_db
@@ -79,4 +80,31 @@ def seed_tenant(
         "tenant_id": tenant.id,
         "whatsapp_phone_number_id": tenant.whatsapp_phone_number_id,
     }
+
+
+@app.get("/subscribe-waba")
+def subscribe_waba(
+    waba_id: str = Query(..., description="WhatsApp Business Account ID"),
+    token: str = Query(..., description="Meta System/User Access Token"),
+):
+    """
+    Iscrive l'account WABA ai webhook di Meta via Graph API.
+    """
+    url = f"https://graph.facebook.com/v18.0/{waba_id}/subscribed_apps"
+    headers = {"Authorization": f"Bearer {token}"}
+
+    try:
+        res = requests.post(url, headers=headers, timeout=10)
+        data = res.json()
+        return {
+            "status": "completed",
+            "waba_id": waba_id,
+            "meta_response": data
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_detail": str(e)
+        }
+
 
